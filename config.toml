@@ -1,0 +1,14 @@
+# 有几个帐号复制几份出来
+# proxy 可选，如果没有留空
+# hardware_id 可选，如果没有留空
+# remark 可选
+[[users]]
+user_token = ""
+remark = "备注信息"
+nodes = [
+    { node_id = "pubKey", proxy = "socks5://username:password@ip:端口", hardware_id = "hardwareId" },
+    { node_id = "pubKey", proxy = "socks5://username:password@ip:端口", hardware_id = "hardwareId" },
+    { node_id = "pubKey", proxy = "socks5://username:password@ip:端口", hardware_id = "hardwareId" },
+    { node_id = "pubKey", proxy = "socks5://username:password@ip:端口", hardware_id = "hardwareId" },
+    { node_id = "pubKey", proxy = "socks5://username:password@ip:端口", hardware_id = "hardwareId" },
+]
