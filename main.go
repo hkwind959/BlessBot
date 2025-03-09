@@ -18,83 +18,93 @@ func main() {
 
 	// 获取token
 	accounts := config.GetConfig()
-	var models []model.RegisterNoe
-	logs.Log().Info("封装参数中....")
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
 	for _, user := range accounts.Users {
 		for _, node := range user.Nodes {
-			var registerNoe model.RegisterNoe
-			proxy := api.CheckProxy(node.Proxy)
-			registerNoe.NodeID = node.NodeID
-			registerNoe.HardwareID = node.HardwareID
-			registerNoe.Proxy = node.Proxy
-			registerNoe.Token = user.UserToken
-			registerNoe.Remark = user.Remark
-			if proxy["ip"] == "" {
-				registerNoe.IpAddress = "0.0.0.0"
-			} else {
-				registerNoe.IpAddress = proxy["ip"]
-			}
-			models = append(models, registerNoe)
+			wg.Add(1)
+			go func(u model.User, n model.UserNode) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				nodeModel := api.NewNodeModel(n.NodeID, n.Proxy, u.UserToken, n.HardwareID, u.Remark)
+				err2 := nodeModel.CheckProxy()
+				if err2 != nil {
+					logs.Log().Error("CheckProxy", zap.String("NodeId", n.NodeID), zap.Error(err2))
+					return
+				}
+				err := nodeModel.CheckNode()
+				if err != nil {
+					logs.Log().Error("CheckNode", zap.String("NodeId", n.NodeID), zap.Error(err))
+					return
+				}
+				if !nodeModel.IsConnected {
+					// 注册
+					nodeModel.RegisterNode()
+					// ping
+					err := nodeModel.PingNode()
+					if err != nil {
+						logs.Log().Error("PingNode", zap.String("NodeId", n.NodeID), zap.Error(err))
+						return
+					}
+					// 开启会话
+					err = nodeModel.StartSession()
+					if err != nil {
+						logs.Log().Error("StartSession", zap.String("NodeId", n.NodeID), zap.Error(err))
+						return
+					}
+				}
+				go processCheckNode(nodeModel)
+				go processNode(nodeModel)
+			}(user, node)
 		}
 	}
-	logs.Log().Info("封装参数完成....")
-	for _, registerNode := range models {
-		go processNode(registerNode)
-	}
+	wg.Wait()
 	select {}
 }
 
 // processNode 处理节点
-func processNode(modelNode model.RegisterNoe) {
-	var lock sync.Mutex
-	var isConnected bool
-	var err error
-	isConnected, err = api.CheckNode(&modelNode)
-	if err != nil {
-		logs.Log().Error("CheckNode", zap.String("NodeId", modelNode.NodeID), zap.Error(err))
-		return
-	}
-	if !isConnected {
-		// 注册
-		api.RegisterNode(&modelNode)
-		// ping
-		api.PingNode(&modelNode, isConnected)
-		// 开启会话
-		api.StartSession(&modelNode)
-	}
-
-	go func() {
-		for {
-			time.Sleep(1 * time.Minute)
-			lock.Lock()
-			isConnected, err = api.CheckNode(&modelNode)
+func processNode(nodeModel *api.NodeModel) {
+	for {
+		time.Sleep(10 * time.Minute)
+		err := nodeModel.HeathCheck()
+		if err != nil {
+			logs.Log().Error("CheckNode", zap.String("NodeId", nodeModel.NodeID), zap.Error(err))
+			continue
+		}
+		err = nodeModel.CheckNode()
+		if err != nil {
+			logs.Log().Error("CheckNode", zap.String("NodeId", nodeModel.NodeID), zap.Error(err))
+			continue
+		}
+		if !nodeModel.IsConnected {
+			// 注册
+			nodeModel.RegisterNode()
+			// ping
+			err := nodeModel.PingNode()
 			if err != nil {
-				logs.Log().Error("CheckNode", zap.String("NodeId", modelNode.NodeID), zap.Error(err))
+				logs.Log().Error("PingNode", zap.String("NodeId", nodeModel.NodeID), zap.Error(err))
 				continue
 			}
-			lock.Unlock()
-		}
-	}()
-
-	go func() {
-		for {
-			time.Sleep(10 * time.Minute)
-			api.HeathCheck(&modelNode)
-			lock.Lock()
-			isConnected, err = api.CheckNode(&modelNode)
+			// 开启会话
+			err = nodeModel.StartSession()
 			if err != nil {
-				logs.Log().Error("CheckNode", zap.String("NodeId", modelNode.NodeID), zap.Error(err))
+				logs.Log().Error("StartSession", zap.String("NodeId", nodeModel.NodeID), zap.Error(err))
 				continue
 			}
-			lock.Unlock()
-			if !isConnected {
-				// 注册
-				api.RegisterNode(&modelNode)
-				// ping
-				api.PingNode(&modelNode, isConnected)
-				// 开启会话
-				api.StartSession(&modelNode)
-			}
 		}
-	}()
+	}
+}
+
+// processCheckNode 处理检测节点
+func processCheckNode(nodeModel *api.NodeModel) {
+	for {
+		time.Sleep(1 * time.Minute)
+		err := nodeModel.CheckNode()
+		if err != nil {
+			logs.Log().Error("CheckNode", zap.String("NodeId", nodeModel.NodeID), zap.Error(err))
+			continue
+		}
+	}
 }
