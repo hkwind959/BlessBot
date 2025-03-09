@@ -6,6 +6,7 @@ import (
 	"BlessBot/logs"
 	"BlessBot/model"
 	"go.uber.org/zap"
+	"sync"
 	"time"
 )
 
@@ -37,70 +38,63 @@ func main() {
 		}
 	}
 	logs.Log().Info("封装参数完成....")
-	processNode(models)
+	for _, registerNode := range models {
+		go processNode(registerNode)
+	}
 	select {}
 }
 
 // processNode 处理节点
-func processNode(models []model.RegisterNoe) {
-	for _, registerNoe := range models {
-		isConnected, err := api.CheckNode(&registerNoe)
-		if err != nil {
-			logs.Log().Error("CheckNode", zap.String("NodeId", registerNoe.NodeID), zap.Error(err))
-			continue
-		}
-		if !isConnected {
-			// 注册
-			api.RegisterNode(&registerNoe)
-			// 开启会话
-			api.StartSession(&registerNoe)
-		}
-		err = api.PingNode(&registerNoe, isConnected)
-		if err != nil {
-			logs.Log().Error("PingNode", zap.String("NodeId", registerNoe.NodeID), zap.Error(err))
-			continue
-		}
-
-		go func() {
-			for {
-				isConnected, err := api.CheckNode(&registerNoe)
-				if err != nil {
-					logs.Log().Error("CheckNode", zap.String("NodeId", registerNoe.NodeID), zap.Error(err))
-					continue
-				}
-				_ = api.PingNode(&registerNoe, isConnected)
-				time.Sleep(10 * time.Minute)
-			}
-		}()
-
-		go func() {
-			for {
-				api.HeathCheck(&registerNoe)
-				isConnected, err := api.CheckNode(&registerNoe)
-				if err != nil {
-					logs.Log().Error("CheckNode", zap.String("NodeId", registerNoe.NodeID), zap.Error(err))
-					continue
-				}
-				if !isConnected {
-					// 停止
-					api.StopSession(&registerNoe)
-					// 注册
-					api.RegisterNode(&registerNoe)
-					// 开启会话
-					api.StartSession(&registerNoe)
-				}
-				time.Sleep(5 * time.Minute)
-			}
-		}()
-		// 发送ping
-		go func() {
-			for {
-				err = api.PingNode(&registerNoe, isConnected)
-				if err != nil {
-					logs.Log().Error("PingNode", zap.String("NodeId", registerNoe.NodeID), zap.Error(err))
-				}
-				time.Sleep(1 * time.Minute)
-			}
-		}()
+func processNode(modelNode model.RegisterNoe) {
+	var lock sync.Mutex
+	var isConnected bool
+	var err error
+	isConnected, err = api.CheckNode(&modelNode)
+	if err != nil {
+		logs.Log().Error("CheckNode", zap.String("NodeId", modelNode.NodeID), zap.Error(err))
+		return
 	}
+	if !isConnected {
+		// 注册
+		api.RegisterNode(&modelNode)
+		// ping
+		api.PingNode(&modelNode, isConnected)
+		// 开启会话
+		api.StartSession(&modelNode)
+	}
+
+	go func() {
+		for {
+			time.Sleep(1 * time.Minute)
+			lock.Lock()
+			isConnected, err = api.CheckNode(&modelNode)
+			if err != nil {
+				logs.Log().Error("CheckNode", zap.String("NodeId", modelNode.NodeID), zap.Error(err))
+				continue
+			}
+			lock.Unlock()
+		}
+	}()
+
+	go func() {
+		for {
+			time.Sleep(10 * time.Minute)
+			api.HeathCheck(&modelNode)
+			lock.Lock()
+			isConnected, err = api.CheckNode(&modelNode)
+			if err != nil {
+				logs.Log().Error("CheckNode", zap.String("NodeId", modelNode.NodeID), zap.Error(err))
+				continue
+			}
+			lock.Unlock()
+			if !isConnected {
+				// 注册
+				api.RegisterNode(&modelNode)
+				// ping
+				api.PingNode(&modelNode, isConnected)
+				// 开启会话
+				api.StartSession(&modelNode)
+			}
+		}
+	}()
 }
